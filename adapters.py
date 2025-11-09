@@ -9,26 +9,27 @@ import librosa
 import argparse
 import os
 from espnet2.bin.s2t_inference import Speech2Text # Core ESPnet module for pre-trained models
-from espnet2.tasks.asr import ASRTask
+from espnet2.tasks.s2t import S2TTask
+from espnet2.layers.create_adapter import create_adapter
 
 print("Successfully imported espnet ez")
 print("ESPnet version: ", espnet.__version__)
 
 
 
-def main(args):
+def main(arguments):
 
-    os.makedirs(args.exp_dir, exist_ok=True)
-    if args.stats_dir is None:
-        args.stats_dir = os.path.join(args.exp_dir, "stats")
-    os.makedirs(args.stats_dir, exist_ok=True)
+    os.makedirs(arguments.exp_dir, exist_ok=True)
+    if arguments.stats_dir is None:
+        arguments.stats_dir = os.path.join(arguments.exp_dir, "stats")
+    os.makedirs(arguments.stats_dir, exist_ok=True)
     
-    fleurs_hf = datasets.load_dataset("google/fleurs", args.fleurs_lang, trust_remote_code=True)
+    fleurs_hf = datasets.load_dataset("google/fleurs", arguments.fleurs_lang, trust_remote_code=True)
 
 
     pretrained_model = Speech2Text.from_pretrained(
-        args.pretrained_model,
-        lang_sym=f"<{args.owsm_lang}>",
+        arguments.pretrained_model,
+        lang_sym=f"<{arguments.owsm_lang}>",
         beam_size=1,
         device='cuda'
     )
@@ -40,6 +41,7 @@ def main(args):
     pretrain_config = vars(pretrained_model.s2t_train_args)
     tokenizer = pretrained_model.tokenizer
     converter = pretrained_model.converter
+
 
     """
     pretrained_model -> the pre-trained model we downloaded earlier
@@ -53,7 +55,7 @@ def main(args):
     data_info = {
         "speech"    : lambda d: d['audio']['array'].astype(np.float32),
         "text"      : lambda d: tokenize(
-                        f"<{args.owsm_lang}><asr><notimestamps> {d['transcription']}"
+                        f"<{arguments.owsm_lang}><asr><notimestamps> {d['transcription']}"
                     ),
         "text_ctc"  : lambda d: tokenize(d['transcription']),
         "text_prev" : lambda d: tokenize("<na>"),
@@ -64,7 +66,7 @@ def main(args):
     test_data_info = {
         "speech"    : lambda d: d['audio']['array'].astype(np.float32),
         "text"      : lambda d: tokenize(
-                        f"<{args.owsm_lang}><asr><notimestamps> {d['transcription']}"
+                        f"<{arguments.owsm_lang}><asr><notimestamps> {d['transcription']}"
                     ),
         "text_ctc"  : lambda d: tokenize(d['transcription']),
         "text_prev" : lambda d: tokenize("<na>"),
@@ -84,15 +86,26 @@ def main(args):
     def count_parameters(model):
         return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    def build_model_fn(configs):
-        model = ASRTask.build_model(configs)
+    def build_model_fn(args):
+        model = S2TTask.build_model(args)
+
+        # yaml apparently doesn't work for adapters if you call build_model()
+        if getattr(args, "use_adapter", False):
+            create_adapter(model, args.adapter, args.adapter_conf)
+
+        for p in model.parameters():
+            p.requires_grad = False
+        for n, p in model.named_parameters():
+            if "lora" in n or "adapter" in n:
+                p.requires_grad = True
+        
         print(f'Trainable parameters: {count_parameters(model)}')
         return model
 
     finetune_config = ez.config.update_finetune_config(
         's2t',
         pretrain_config,
-        args.finetune_config
+        arguments.finetune_config
     )
 
     trainer = ez.Trainer(
@@ -102,14 +115,12 @@ def main(args):
         valid_dataset=valid_dataset,
         build_model_fn=build_model_fn, # provide the pre-trained model
         data_info=data_info,
-        output_dir=args.exp_dir,
-        stats_dir=args.stats_dir,
+        output_dir=arguments.exp_dir,
+        stats_dir=arguments.stats_dir,
         ngpu=1
     )
 
     trainer.collect_stats()
-
-    print(f"Total steps per epoch: {len(trainer.train_loader)}")
 
     trainer.train()
 
@@ -160,6 +171,6 @@ if __name__ == "__main__":
         help="Pretrained OWSM CTC v4 model ID",
     )
 
-    args = parser.parse_args()
+    arguments = parser.parse_args()
 
-    main(args)
+    main(arguments)

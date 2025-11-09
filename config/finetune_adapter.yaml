@@ -1,6 +1,6 @@
 # training related
 seed: 2024
-num_workers: 4
+num_workers: 2
 ngpu: 1
 batch_type: numel
 batch_size: 4
@@ -16,7 +16,7 @@ multiple_iterator: false
 
 optim: adamw
 optim_conf:
-    lr: 1e-4
+    lr: 0.0001
     weight_decay: 0.01
 scheduler: warmuplr
 scheduler_conf:
@@ -41,14 +41,21 @@ specaug_conf:
     - 0.05
     num_time_mask: 5
 
-# adapter related
+# adapter related, E-adapter-like
 use_adapter: true
-adapter: houlsby
+adapter: lora
 adapter_conf:
-  bottleneck_dim: 256         
+  rank: 16                    
+  alpha: 32                   
+  dropout_rate: 0.05              
   target_modules:
-    - encoder.encoders.*.self_attn
-    - encoder.encoders.*.feed_forward
+    - linear_q
+    - linear_k
+    - linear_v
+    - linear_out
+    - w_1
+    - w_2
+  bias_type: none
 
 
 freeze_param: # freeze existing layers
