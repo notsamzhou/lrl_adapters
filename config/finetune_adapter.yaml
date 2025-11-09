@@ -1,0 +1,59 @@
+# training related
+seed: 2024
+num_workers: 4
+ngpu: 1
+batch_type: numel
+batch_size: 4
+batch_bins: 400000
+accum_grad: 2
+
+max_epoch: 5
+log_interval: 50
+keep_nbest_models: 5
+use_amp: true
+multiple_iterator: false
+
+
+optim: adamw
+optim_conf:
+    lr: 1e-4
+    weight_decay: 0.01
+scheduler: warmuplr
+scheduler_conf:
+  warmup_steps: 500
+
+grad_clip: 5.0
+grad_clip_type: 2.0
+
+specaug: specaug
+specaug_conf:
+    apply_time_warp: true
+    time_warp_window: 5
+    time_warp_mode: bicubic
+    apply_freq_mask: true
+    freq_mask_width_range:
+    - 0
+    - 27
+    num_freq_mask: 2
+    apply_time_mask: true
+    time_mask_width_ratio_range:
+    - 0.
+    - 0.05
+    num_time_mask: 5
+
+# adapter related
+use_adapter: true
+adapter: houlsby
+adapter_conf:
+  bottleneck_dim: 256         
+  target_modules:
+    - encoder.encoders.*.self_attn
+    - encoder.encoders.*.feed_forward
+
+
+freeze_param: # freeze existing layers
+  - frontend
+  - specaug
+  - normalize
+  - encoder
+  - ctc
