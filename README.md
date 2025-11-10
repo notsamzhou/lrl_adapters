@@ -19,5 +19,11 @@ pip install --user loralib "datasets<4.0.0"
 To train an adapter for a single language,
 
 ```
-sbatch -p GPU-shared --gres=gpu:v100:1 -t 4:00:00 adapters.sh {FLEURS language code} {OWSM language code}
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 4:00:00 scripts/adapters.sh {FLEURS language code} {OWSM language code}
+```
+
+To evaluate the baseline model for a language,
+
+```
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:00:00 scripts/test_base.sh {FLEURS language code} {OWSM language code}  {Optional: num_samples}
 ```
