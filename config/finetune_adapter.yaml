@@ -3,7 +3,7 @@ seed: 2024
 num_workers: 2
 ngpu: 1
 batch_type: numel
-batch_size: 4
+batch_size: 8
 batch_bins: 400000
 accum_grad: 2
 
@@ -16,26 +16,26 @@ multiple_iterator: false
 
 optim: adamw
 optim_conf:
-    lr: 0.0001
+    lr: 0.0005
     weight_decay: 0.01
 scheduler: warmuplr
 scheduler_conf:
-  warmup_steps: 500
+  warmup_steps: 1000
 
 grad_clip: 5.0
 grad_clip_type: 2.0
 
 specaug: specaug
 specaug_conf:
-    apply_time_warp: true
+    apply_time_warp: false
     time_warp_window: 5
     time_warp_mode: bicubic
-    apply_freq_mask: true
+    apply_freq_mask: false
     freq_mask_width_range:
     - 0
     - 27
     num_freq_mask: 2
-    apply_time_mask: true
+    apply_time_mask: false
     time_mask_width_ratio_range:
     - 0.
     - 0.05
