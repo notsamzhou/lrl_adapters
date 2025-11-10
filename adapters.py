@@ -12,9 +12,14 @@ from espnet2.bin.s2t_inference import Speech2Text # Core ESPnet module for pre-t
 from espnet2.tasks.s2t import S2TTask
 from espnet2.layers.create_adapter import create_adapter
 
+# Get the script's directory and use it as the base for cache
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+HF_CACHE_DIR = os.path.join(SCRIPT_DIR, '.cache', 'huggingface')
+os.environ['HF_HOME'] = HF_CACHE_DIR
+os.environ['HF_DATASETS_CACHE'] = os.path.join(HF_CACHE_DIR, 'datasets')
+
 print("Successfully imported espnet ez")
 print("ESPnet version: ", espnet.__version__)
-
 
 
 def main(arguments):
@@ -23,8 +28,22 @@ def main(arguments):
     if arguments.stats_dir is None:
         arguments.stats_dir = os.path.join(arguments.exp_dir, "stats")
     os.makedirs(arguments.stats_dir, exist_ok=True)
-    
-    fleurs_hf = datasets.load_dataset("google/fleurs", arguments.fleurs_lang, trust_remote_code=True)
+
+
+    try:
+        fleurs_hf = datasets.load_dataset(
+            "google/fleurs",
+            arguments.fleurs_lang,
+            trust_remote_code=True 
+        )
+    except ValueError as e:
+        fleurs_hf = datasets.load_dataset(
+            "google/fleurs",
+            arguments.fleurs_lang,
+            trust_remote_code=True,
+            download_mode="force_redownload"  
+        )
+
 
 
     pretrained_model = Speech2Text.from_pretrained(
