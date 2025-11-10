@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 
+import os
+import argparse
+
+# Set cache directories BEFORE importing datasets/HF libraries
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+HF_CACHE_DIR = os.path.join(SCRIPT_DIR, '.cache', 'huggingface')
+os.environ['HF_HOME'] = HF_CACHE_DIR
+os.environ['HF_DATASETS_CACHE'] = os.path.join(HF_CACHE_DIR, 'datasets')
+
 import torch
 import datasets
 import espnet
 import espnetez as ez # ESPnet wrapper that simplifies integration. If you get an error when executing this cell, click Runtime -> Restart Session, and rerun from the beginning
 import numpy as np
 import librosa
-import argparse
-import os
 from espnet2.bin.s2t_inference import Speech2Text # Core ESPnet module for pre-trained models
 from espnet2.tasks.s2t import S2TTask
 from espnet2.layers.create_adapter import create_adapter
-
-# Get the script's directory and use it as the base for cache
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-HF_CACHE_DIR = os.path.join(SCRIPT_DIR, '.cache', 'huggingface')
-os.environ['HF_HOME'] = HF_CACHE_DIR
-os.environ['HF_DATASETS_CACHE'] = os.path.join(HF_CACHE_DIR, 'datasets')
 
 print("Successfully imported espnet ez")
 print("ESPnet version: ", espnet.__version__)
