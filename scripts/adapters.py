@@ -115,11 +115,17 @@ def main(arguments):
 
         for p in model.parameters():
             p.requires_grad = False
+
+        trainable_count = 0
+        lora_modules = []
         for n, p in model.named_parameters():
             if "lora" in n or "adapter" in n:
                 p.requires_grad = True
-        
-        print(f'Trainable parameters: {count_parameters(model)}')
+                trainable_count += p.numel()
+                lora_modules.append(n)
+
+        print(f'Trainable parameters: {trainable_count:,}')
+
         return model
 
     finetune_config = ez.config.update_finetune_config(
