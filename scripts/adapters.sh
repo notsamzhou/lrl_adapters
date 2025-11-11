@@ -11,7 +11,10 @@ STATS_DIR=${EXP_DIR}/stats
 
 mkdir -p "${EXP_DIR}" "${STATS_DIR}"
 
+
 echo "[$(date)] Starting adapter training for FLEURS=${FLEURS_LANG}, OWSM_LANG=${OWSM_LANG}"
+
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 python3 scripts/adapters.py \
   --fleurs_lang ${FLEURS_LANG} \

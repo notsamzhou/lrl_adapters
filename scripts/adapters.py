@@ -16,7 +16,6 @@ import espnetez as ez # ESPnet wrapper that simplifies integration. If you get a
 import numpy as np
 import librosa
 from espnet2.bin.s2t_inference import Speech2Text # Core ESPnet module for pre-trained models
-from espnet2.tasks.s2t import S2TTask
 from espnet2.layers.create_adapter import create_adapter
 
 print("Successfully imported espnet ez")
@@ -107,11 +106,12 @@ def main(arguments):
         return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
     def build_model_fn(args):
-        model = S2TTask.build_model(args)
+        model = pretrained_model.s2t_model
 
-        # yaml apparently doesn't work for adapters if you call build_model()
         if getattr(args, "use_adapter", False):
             create_adapter(model, args.adapter, args.adapter_conf)
+        
+        model.train()
 
         for p in model.parameters():
             p.requires_grad = False
@@ -119,10 +119,9 @@ def main(arguments):
         trainable_count = 0
         lora_modules = []
         for n, p in model.named_parameters():
-            if "lora" in n or "adapter" in n:
+            if ("lora" in n or "adapter" in n):
                 p.requires_grad = True
                 trainable_count += p.numel()
-                lora_modules.append(n)
 
         print(f'Trainable parameters: {trainable_count:,}')
 
