@@ -102,7 +102,7 @@ def test_base_model(fleurs_lang, owsm_lang, pretrained_model="espnet/owsm_v4_bas
     model = Speech2Text.from_pretrained(
         pretrained_model,
         lang_sym=f"<{owsm_lang}>",
-        beam_size=1,
+        beam_size=5,
         device=device
     )
 
