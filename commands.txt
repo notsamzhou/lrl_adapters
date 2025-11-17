@@ -1,0 +1,43 @@
+# Finetune sources
+sbatch -p GPU-shared --gres=gpu:v100-32:1 -t 12:00:00 scripts/adapters.sh hu_hu hun
+sbatch -p GPU-shared --gres=gpu:v100-32:1 -t 12:00:00 scripts/adapters.sh ru_ru rus
+sbatch -p GPU-shared --gres=gpu:v100-32:1 -t 12:00:00 scripts/adapters.sh cy_gb cym
+sbatch -p GPU-shared --gres=gpu:v100-32:1 -t 12:00:00 scripts/adapters.sh it_it ita
+sbatch -p GPU-shared --gres=gpu:v100-32:1 -t 12:00:00 scripts/adapters.sh pt_br por
+
+# Finetune targets
+sbatch -p GPU-shared --gres=gpu:v100-32:1 -t 12:00:00 scripts/adapters.sh ga_ie gle
+sbatch -p GPU-shared --gres=gpu:v100-32:1 -t 12:00:00 scripts/adapters.sh oc_fr oci
+sbatch -p GPU-shared --gres=gpu:v100-32:1 -t 12:00:00 scripts/adapters.sh sr_rs srp
+sbatch -p GPU-shared --gres=gpu:v100-32:1 -t 12:00:00 scripts/adapters.sh nb_no nob
+sbatch -p GPU-shared --gres=gpu:v100-32:1 -t 12:00:00 scripts/adapters.sh hy_am hye
+
+# Finetune shared
+sbatch -p GPU-shared --gres=gpu:v100-32:1 -t 12:00:00 scripts/adapters_shared.sh
+
+
+# Evaluate with baseline
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:30:00 scripts/test_base.sh ga_ie gle 
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:30:00 scripts/test_base.sh oc_fr oci 
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:30:00 scripts/test_base.sh sr_rs srp 
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:30:00 scripts/test_base.sh nb_no nob 
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:30:00 scripts/test_base.sh hy_am hye
+
+# Evaluate with target adapters
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:30:00 scripts/test_checkpoint.sh exp/adapter_gle/valid.total_count.best.pth ga_ie gle
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:30:00 scripts/test_checkpoint.sh exp/adapter_oci/valid.total_count.best.pth oc_fr oci
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:30:00 scripts/test_checkpoint.sh exp/adapter_srp/valid.total_count.best.pth sr_rs srp
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:30:00 scripts/test_checkpoint.sh exp/adapter_nob/valid.total_count.best.pth nb_no nob
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:30:00 scripts/test_checkpoint.sh exp/adapter_hye/valid.total_count.best.pth hy_am hye
+
+# Evaluate with shared source adapter
+
+
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:30:00 scripts/test_checkpoint.sh exp/adapter_shared/valid.total_count.best.pth ga_ie gle
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:30:00 scripts/test_checkpoint.sh exp/adapter_shared/valid.total_count.best.pth hy_am hye
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:30:00 scripts/test_checkpoint.sh exp/adapter_shared/valid.total_count.best.pth oc_fr oci
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:30:00 scripts/test_checkpoint.sh exp/adapter_shared/valid.total_count.best.pth sr_rs srp
+sbatch -p GPU-shared --gres=gpu:v100:1 -t 1:30:00 scripts/test_checkpoint.sh exp/adapter_shared/valid.total_count.best.pth nb_no nob
+TODO: Evaluate with averaged source adapters
+
+hy_am hye
