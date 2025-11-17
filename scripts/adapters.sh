@@ -22,6 +22,6 @@ python3 scripts/adapters.py \
   --exp_dir ${EXP_DIR} \
   --stats_dir ${STATS_DIR} \
   --finetune_config config/finetune_adapter.yaml \
-  --pretrained_model espnet/owsm_v4_base_102M
+  --pretrained_model espnet/owsm_v4_small_370M
 
 echo "[$(date)] Finetuning completed for FLEURS=${FLEURS_LANG}, OWSM_LANG=${OWSM_LANG}"

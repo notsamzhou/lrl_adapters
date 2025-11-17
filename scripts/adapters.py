@@ -108,8 +108,7 @@ def main(arguments):
     def build_model_fn(args):
         model = pretrained_model.s2t_model
 
-        if getattr(args, "use_adapter", False):
-            create_adapter(model, args.adapter, args.adapter_conf)
+        create_adapter(model, args.adapter, args.adapter_conf)
         
         model.train()
 
@@ -192,8 +191,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pretrained_model",
         type=str,
-        default="espnet/owsm_v4_base_102M",
-        help="Pretrained OWSM CTC v4 model ID",
+        default="espnet/owsm_v4_small_370M",
+        help="Pretrained OWSM v4 model ID",
     )
 
     arguments = parser.parse_args()

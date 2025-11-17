@@ -15,6 +15,6 @@ python3 scripts/adapters_shared.py \
   --exp_dir ${EXP_DIR} \
   --stats_dir ${STATS_DIR} \
   --finetune_config config/finetune_adapter_shared.yaml \
-  --pretrained_model espnet/owsm_v4_base_102M
+  --pretrained_model espnet/owsm_v4_small_370M
 
 echo "[$(date)] Shared finetuning completed"

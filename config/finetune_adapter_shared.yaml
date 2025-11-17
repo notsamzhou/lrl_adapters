@@ -6,7 +6,7 @@ batch_type: numel
 batch_bins: 400000
 accum_grad: 2
 
-max_epoch: 5 
+max_epoch: 10 
 log_interval: 50
 keep_nbest_models: 3
 use_amp: true
@@ -14,7 +14,7 @@ multiple_iterator: false
 
 optim: adamw
 optim_conf:
-    lr: 0.00005
+    lr: 0.00001
     weight_decay: 0.001
 scheduler: warmuplr
 scheduler_conf:
@@ -44,8 +44,8 @@ grad_clip_type: 2.0
 use_adapter: true
 adapter: lora
 adapter_conf:
-  rank: 16
-  alpha: 32
+  rank: 32
+  alpha: 64
   dropout_rate: 0.05
   target_modules:
     - linear_q

@@ -93,7 +93,7 @@ def calculate_cer(references, hypotheses):
     return cer
 
 
-def test_base_model(fleurs_lang, owsm_lang, pretrained_model="espnet/owsm_v4_base_102M", num_samples=None, device='cuda'):
+def test_base_model(fleurs_lang, owsm_lang, pretrained_model="espnet/owsm_v4_small_370M", num_samples=None, device='cuda'):
     """Test the base pretrained model on a specific language's test set"""
 
     print(f"Loading base model: {pretrained_model}")
@@ -105,6 +105,8 @@ def test_base_model(fleurs_lang, owsm_lang, pretrained_model="espnet/owsm_v4_bas
         beam_size=5,
         device=device
     )
+
+    model.s2t_model.eval()
 
     try:
         fleurs_hf = datasets.load_dataset(
@@ -176,16 +178,12 @@ def main(args):
     if args.output_file:
         with open(args.output_file, 'w', encoding='utf-8') as f:
             f.write(f"Base Model Evaluation Results\n")
-            f.write(f"{'='*80}\n")
             f.write(f"Model: {args.pretrained_model}\n")
-            f.write(f"Language: {args.fleurs_lang} (OWSM: {args.owsm_lang})\n")
+            f.write(f"Testing on: {args.fleurs_lang} (OWSM: {args.owsm_lang})\n")
             f.write(f"Samples: {len(references)}\n")
-            f.write(f"{'='*80}\n\n")
             f.write(f"WER: {wer:.4f} ({wer*100:.2f}%)\n")
             f.write(f"CER: {cer:.4f} ({cer*100:.2f}%)\n\n")
-            f.write(f"{'='*80}\n")
-            f.write(f"Detailed Results\n")
-            f.write(f"{'='*80}\n\n")
+            f.write(f"Examples:\n\n")
 
             for i, (ref, hyp) in enumerate(zip(references[:5], hypotheses[:5])):
                 f.write(f"Sample {i+1}:\n")
@@ -205,22 +203,22 @@ if __name__ == "__main__":
         "--fleurs_lang",
         type=str,
         required=True,
-        help="FLEURS language code to test on (e.g., pt_br, es_419, it_it)",
+        help="FLEURS language code to test on (e.g., pt_br)",
     )
 
     parser.add_argument(
         "--owsm_lang",
         type=str,
         required=True,
-        help="OWSM language code (e.g., por, spa, ita)",
+        help="OWSM language code (e.g., por)",
     )
 
     # Model
     parser.add_argument(
         "--pretrained_model",
         type=str,
-        default="espnet/owsm_v4_base_102M",
-        help="Pretrained OWSM model to evaluate (default: espnet/owsm_v4_base_102M)",
+        default="espnet/owsm_v4_small_370M",
+        help="Pretrained OWSM model to evaluate (default: espnet/owsm_v4_small_370M)",
     )
 
     # Optional parameters

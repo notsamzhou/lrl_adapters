@@ -15,6 +15,7 @@ import espnet
 import espnetez as ez
 import numpy as np
 import librosa
+import random
 from espnet2.bin.s2t_inference import Speech2Text
 from espnet2.layers.create_adapter import create_adapter
 
@@ -78,6 +79,11 @@ def main(arguments):
                 "lang": owsm_lang,
             })
 
+    # Shuffle the merged datasets to mix languages randomly
+    random.seed(42)
+    random.shuffle(merged_train)
+    random.shuffle(merged_valid)
+
     data_info = {
         "speech": lambda d: d["audio"]["array"].astype(np.float32),
         "text": lambda d: tokenize(
@@ -97,8 +103,7 @@ def main(arguments):
     def build_model_fn(args):
         model = pretrained_model.s2t_model
 
-        if getattr(args, "use_adapter", False):
-            create_adapter(model, args.adapter, args.adapter_conf)
+        create_adapter(model, args.adapter, args.adapter_conf)
 
         model.train()
 
@@ -128,7 +133,7 @@ def main(arguments):
         train_dataset=train_ds,  
         valid_dataset=valid_ds,  
         build_model_fn=build_model_fn,
-        data_info=None,  # Already applied
+        data_info=data_info,
         output_dir=arguments.exp_dir,
         stats_dir=arguments.stats_dir,
         ngpu=1
@@ -167,8 +172,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pretrained_model",
         type=str,
-        default="espnet/owsm_v4_base_102M",
-        help="Pretrained OWSM CTC v4 model ID",
+        default="espnet/owsm_v4_small_370M",
+        help="Pretrained OWSM v4 model ID",
     )
 
     arguments = parser.parse_args()
