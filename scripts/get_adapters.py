@@ -17,21 +17,26 @@ def main(args):
     create_adapter(pm.s2t_model, cfg["adapter"], cfg["adapter_conf"])
 
     print(f"Loading trained state dict: {args.checkpoint}")
-    sd = torch.load(args.checkpoint, map_location="cpu")
-    missing, unexpected = pm.s2t_model.load_state_dict(sd, strict=False)
+    full_sd = torch.load(args.checkpoint, map_location="cpu")
+    missing, unexpected = pm.s2t_model.load_state_dict(full_sd, strict=False)
 
-    adapters_only = {}
-    for n, p in pm.s2t_model.named_parameters():
-        if is_lora_param(n):
-            adapters_only[n] = p.detach().cpu()
-    for n, b in pm.s2t_model.named_buffers():
-        if is_lora_param(n):
-            adapters_only[n] = b.detach().cpu()
+    encoder_adapter_sd = {}
+    for k, v in pm.s2t_model.state_dict().items():
+        k_l = k.lower()
+        if not k.startswith("encoder."):
+            continue
+        if ("lora" in k_l) or ("adapter" in k_l):
+            encoder_adapter_sd[k] = v.clone().cpu()
 
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
-    torch.save(adapters_only, args.output)
-    print(f"Saved adapter-only weights to: {args.output}")
-    print(f"Count keys: {len(adapters_only)}")
+    total = sum(p.numel() for p in encoder_adapter_sd.values())
+    print(f"Collected encoder only adapter tensors: {len(encoder_adapter_sd)} params, total elements: {total:,}")
+
+    out_dir = args.out_dir or "adapters_export"
+    os.makedirs(out_dir, exist_ok=True)
+    out_name = args.out_name if args.out_name else f"encoder_only_{args.owsm_lang}.pth"
+    out_path = os.path.join(out_dir, out_name)
+    torch.save(encoder_adapter_sd, out_path)
+    print(f"Saved adapter-only weights to: {out_path}")
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
@@ -40,7 +45,9 @@ if __name__ == "__main__":
     ap.add_argument("--adapter_config", default="config/finetune_adapter.yaml")
     ap.add_argument("--owsm_lang", required=True, help="source/target language code")
     ap.add_argument("--pretrained_model", default="espnet/owsm_v4_small_370M")
-    ap.add_argument("--output", required=True,
-                    help="Where to save adapter-only file, e.g. exp/adapter_por/adapters_only.pt")
+    ap.add_argument("--out_dir", default="adapters_export",
+                    help="directory to save the filtered state_dict")
+    ap.add_argument("--out_name", default=None,
+                    help="optional filename for the exported .pth")
     args = ap.parse_args()
     main(args)
