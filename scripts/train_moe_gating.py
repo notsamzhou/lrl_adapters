@@ -22,8 +22,8 @@ from espnet2.bin.s2t_inference import Speech2Text
 
 print("ESPnet version:", espnet.__version__)
 class TokenLevelGating(nn.Module):
-    """Token-level gating network - predicts expert weights per token."""
-    def __init__(self, hidden_dim: int, num_experts: int, dropout: float = 0.1, training_noise: bool = True):
+    """Dense Gating - Uses weighted average of ALL experts."""
+    def __init__(self, hidden_dim: int, num_experts: int, dropout: float = 0.1, training_noise: bool = True, target_lang: str = None):
         super().__init__()
         self.num_experts = num_experts
         self.training_noise = training_noise
@@ -33,46 +33,54 @@ class TokenLevelGating(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim // 4, num_experts)
         )
+        # Init zeros to start with a uniform average of all experts
         nn.init.zeros_(self.gate[-1].weight)
         nn.init.zeros_(self.gate[-1].bias)
+
+        if target_lang:
+            prior_tensor = torch.tensor(expert_priors(target_lang), dtype=self.gate[-1].bias.dtype)
+            self.gate[-1].bias.data.copy_(prior_tensor)
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         logits = self.gate(x)
 
-        if self.training and self.training_noise: # add noise to avoid fixating on just a few adapters
-            noise = torch.randn_like(logits) 
+        if self.training and self.training_noise:
+            # Noise helps prevent the router from collapsing to just one expert early on
+            noise = torch.randn_like(logits) * 0.1 
             logits = logits + noise
 
-        top_k_vals, top_k_indices = torch.topk(logits, 2, dim=-1) # top 2-gating
+        weights = F.softmax(logits, dim=-1)
         
+        return weights
 
-        top_k_weights = F.softmax(top_k_vals, dim=-1)
-        top_k_weights = top_k_weights.to(dtype=logits.dtype)
-        full_weights = torch.zeros_like(logits)
-        full_weights.scatter_(-1, top_k_indices, top_k_weights)
-        
-        return full_weights
+def expert_priors(target_lang: str):
+    # cym , rus, ita, por, hun, base
+    priors = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    if target_lang == 'srp':
+        priors = [-2.0,  3.0,  -2.0, -2.0, -2.0, 1.0]
+    if target_lang == 'hye':
+        priors = [-1.0,  3.0, -1.0, -1.0, -1.0, 1.0]
+    if target_lang == 'gle':
+        priors = [ 3.0, -2.0, -2.0, -2.0, -2.0, 1.0]
+    if target_lang == 'nob':
+        priors = [-2.0,  -2.0,  -2.0, -2.0, -2.0, 1.0]
+    if target_lang == 'oci':
+        priors = [-2.0, -2.0,  3.0,  -2.0, -2.0, 1.0]
+    return priors
+
+
 
 class MultiExpertLoRALinear(nn.Module):
-    """Replaces a standard Linear + LoRA with a multi-expert LoRA layer."""
-    def __init__(
-        self,
-        base_linear: nn.Linear,
-        num_experts: int,
-        rank: int,
-        alpha: float,
-        dropout: float = 0.0
-    ):
+    def __init__(self, base_linear: nn.Linear, num_experts: int, rank: int, alpha: float, dropout: float = 0.0):
         super().__init__()
         self.base_linear = base_linear
         self.num_experts = num_experts
         self.rank = rank
         self.scaling = alpha / rank
-
         in_features = base_linear.in_features
         out_features = base_linear.out_features
 
-        # Empty lora experts
         self.lora_A = nn.ParameterList([
             nn.Parameter(torch.zeros(rank, in_features), requires_grad=False)
             for _ in range(num_experts)
@@ -81,11 +89,13 @@ class MultiExpertLoRALinear(nn.Module):
             nn.Parameter(torch.zeros(out_features, rank), requires_grad=False)
             for _ in range(num_experts)
         ])
-
-        # Freeze base linear
+        
+        # Freeze base, Freeze experts
         for param in self.base_linear.parameters():
             param.requires_grad = False
-
+        for p in self.lora_A: p.requires_grad = False
+        for p in self.lora_B: p.requires_grad = False
+            
         self.current_gates = None
 
     def load_expert_weights(self, expert_idx: int, lora_A: torch.Tensor, lora_B: torch.Tensor):
@@ -98,36 +108,32 @@ class MultiExpertLoRALinear(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         result = self.base_linear(x)
 
-        # Fallback to uniform if no gates set (or hygiene check)
-        if self.current_gates is None:
+        gates = self.current_gates
+        
+        # Safety Check for Inference Crash
+        if gates is not None:
+            if gates.shape[:-1] != x.shape[:-1]:
+                gates = None 
+        
+        if gates is None:
+            # Fallback to Uniform Soft weights
             gates = torch.ones(
                 (*x.shape[:-1], self.num_experts),
                 device=x.device, dtype=x.dtype
             ) / self.num_experts
-        else:
-            gates = self.current_gates
 
+        # expert_outputs shape: [NumExperts, Batch, Seq, OutDim]
         expert_outputs = []
         for i in range(self.num_experts):
             lora_out = x @ self.lora_A[i].T @ self.lora_B[i].T * self.scaling
             expert_outputs.append(lora_out)
-
         expert_outputs = torch.stack(expert_outputs, dim=0)
-        
-        # Dimensions: 
-        # gates: (Batch, Seq, NumExperts)
-        # expert_outputs: (NumExperts, Batch, Seq, OutDim)
-        
-        # We need to broadcast gates to match expert_outputs
-        # Permute gates to (NumExperts, Batch, Seq, 1)
+
+        # Gates: [Batch, Seq, NumExperts] -> [NumExperts, Batch, Seq, 1]
         gates_expanded = gates.permute(-1, *range(len(gates.shape)-1)).unsqueeze(-1)
-
+        
         lora_delta = (gates_expanded * expert_outputs).sum(dim=0)
-
-        # Hygiene between batches during training: Clear gates
-        if self.training:
-            self.current_gates = None
-
+        
         return result + lora_delta
 
 class EncoderMoEPreHook:
@@ -146,47 +152,39 @@ class EncoderMoEPreHook:
 
 
 class DecoderMoEPreHook:
-    """
-    Pre-Hook for DECODER layers (Complex: Dual Inputs).
-    
-    1. Standard Modules (SelfAttn, FFN, SrcAttn.Q) -> Gate on Decoder State (x)
-    2. Memory Modules (SrcAttn.K, SrcAttn.V) -> Gate on Encoder Memory (memory)
-    """
-    def __init__(
-        self, 
-        gating_net_x: TokenLevelGating, 
-        gating_net_mem: TokenLevelGating,
-        std_modules: List[MultiExpertLoRALinear],
-        mem_modules: List[MultiExpertLoRALinear]
-    ):
+    def __init__(self, gating_net_x, gating_net_mem, std_modules, mem_modules):
         self.gating_net_x = gating_net_x
         self.gating_net_mem = gating_net_mem
         self.std_modules = std_modules
         self.mem_modules = mem_modules
-
     def __call__(self, module, args):
-        # Decoder args: (x, mask, memory, memory_mask)
-        # x: [Batch, T_tgt, Dim]
-        # memory: [Batch, T_src, Dim] (Encoder Output)
+        x = None
+        memory = None
+
+        if isinstance(args, tuple):
+            if len(args) >= 1:
+                x = args[0]
+            if len(args) >= 3:
+                memory = args[2]
         
-        if isinstance(args, tuple) and len(args) >= 3:
-            x = args[0]
-            memory = args[2]
-        else:
-            return None
+        # 1. Gate on Decoder Input (tgt)
+        if x is not None:
+            gates_x = self.gating_net_x(x)
+            for m in self.std_modules:
+                m.set_gates(gates_x)
+        
+        # 2. Gate on Memory (Encoder Output) - Only if memory modules exist
+        if self.mem_modules:
+            if memory is not None:
+                gates_mem = self.gating_net_mem(memory)
+                for m in self.mem_modules:
+                    m.set_gates(gates_mem)
+            else:
+                # IMPORTANT: Clear memory gates if memory is not present
+                # so MultiExpertLoRALinear falls back to uniform instead of using stale gates.
+                for m in self.mem_modules:
+                    m.set_gates(None)
 
-        # 1. Compute Decoder-based gates (T_tgt)
-        gates_x = self.gating_net_x(x)
-        for m in self.std_modules:
-            m.set_gates(gates_x)
-
-        # 2. Compute Encoder-Memory-based gates (T_src)
-        # Only if we have memory modules (src_attn K/V) in this layer
-        if self.mem_modules and memory is not None:
-            gates_mem = self.gating_net_mem(memory)
-            for m in self.mem_modules:
-                m.set_gates(gates_mem)
-                
         return None
 
 
@@ -224,17 +222,21 @@ def replace_linear_with_multi_expert(
                 multi_expert = MultiExpertLoRALinear(child, num_experts, rank, alpha)
                 
                 # Load weights
-                loaded = 0
+                loaded_count = 0
                 for i, params in enumerate(expert_params):
+                    # Skip the last expert if it's the empty "Base" expert
+                    if not params: 
+                        continue 
+
                     key_A = f"{full_name}.lora_A"
                     key_B = f"{full_name}.lora_B"
-                    if key_A in params and key_B in params:
-                        multi_expert.load_expert_weights(i, params[key_A], params[key_B])
-                        loaded += 1
-                
-                if loaded > 0:
-                    setattr(parent, name, multi_expert)
-                    replaced[full_name] = multi_expert
+                    
+                    multi_expert.load_expert_weights(i, params[key_A], params[key_B])
+                    loaded_count += 1
+
+
+                setattr(parent, name, multi_expert)
+                replaced[full_name] = multi_expert
             
             replace_in_module(child, full_name)
 
@@ -247,7 +249,8 @@ def setup_moe_gating(
     adapter_checkpoints: List[str],
     adapter_config: dict,
     encoder_hidden_dim: int,
-    decoder_hidden_dim: int
+    decoder_hidden_dim: int,
+    target_lang: str = None
 ):
     target_modules = adapter_config['adapter_conf']['target_modules']
     rank = adapter_config['adapter_conf']['rank']
@@ -255,6 +258,9 @@ def setup_moe_gating(
 
     enc_params = [load_adapter_checkpoint(p, "encoder.") for p in adapter_checkpoints]
     dec_params = [load_adapter_checkpoint(p, "decoder.") for p in adapter_checkpoints]
+
+    enc_params.append({}) 
+    dec_params.append({})
 
     print("Replacing Encoder Modules:")
     enc_replaced = replace_linear_with_multi_expert(
@@ -271,7 +277,7 @@ def setup_moe_gating(
 
     # Create Encoder Gating
     enc_gating_nets = nn.ModuleList([
-        TokenLevelGating(encoder_hidden_dim, num_experts) for _ in range(num_enc_layers)
+        TokenLevelGating(encoder_hidden_dim, num_experts, target_lang = target_lang) for _ in range(num_enc_layers)
     ])
 
     print("Replacing Decoder Modules:")
@@ -296,10 +302,10 @@ def setup_moe_gating(
                 dec_std_modules[idx].append(mod)
 
     dec_gating_nets_x = nn.ModuleList([
-        TokenLevelGating(decoder_hidden_dim, num_experts) for _ in range(num_dec_layers)
+        TokenLevelGating(decoder_hidden_dim, num_experts, target_lang = target_lang) for _ in range(num_dec_layers)
     ])
     dec_gating_nets_mem = nn.ModuleList([
-        TokenLevelGating(encoder_hidden_dim, num_experts) for _ in range(num_dec_layers)
+        TokenLevelGating(encoder_hidden_dim, num_experts, target_lang = target_lang) for _ in range(num_dec_layers)
     ])
 
     return (
@@ -309,10 +315,10 @@ def setup_moe_gating(
     )
 
 
-def main(args):
-    os.makedirs(args.exp_dir, exist_ok=True)
-    if args.stats_dir is None:
-        args.stats_dir = os.path.join(args.exp_dir, "stats")
+def main(margs):
+    os.makedirs(margs.exp_dir, exist_ok=True)
+    if margs.stats_dir is None:
+        margs.stats_dir = os.path.join(margs.exp_dir, "stats")
     
     # Config
     SOURCE_LANGS = ['cym', 'rus', 'ita', 'por', 'hun']
@@ -326,13 +332,13 @@ def main(args):
 
     # Dataset Setup
     try:
-        fleurs_hf = datasets.load_dataset("google/fleurs", args.fleurs_lang, trust_remote_code=True)
+        fleurs_hf = datasets.load_dataset("google/fleurs", margs.fleurs_lang, trust_remote_code=True)
     except:
-        fleurs_hf = datasets.load_dataset("google/fleurs", args.fleurs_lang, trust_remote_code=True, download_mode="force_redownload")
+        fleurs_hf = datasets.load_dataset("google/fleurs", margs.fleurs_lang, trust_remote_code=True, download_mode="force_redownload")
 
     pretrained_model = Speech2Text.from_pretrained(
-        args.pretrained_model,
-        lang_sym=f"<{args.target_lang}>",
+        margs.pretrained_model,
+        lang_sym=f"<{margs.target_lang}>",
         beam_size=1,
         device='cuda'
     )
@@ -346,7 +352,7 @@ def main(args):
 
     data_info = {
         "speech": lambda d: d['audio']['array'].astype(np.float32),
-        "text": lambda d: tokenize(f"<{args.target_lang}><asr><notimestamps> {d['transcription']}"),
+        "text": lambda d: tokenize(f"<{margs.target_lang}><asr><notimestamps> {d['transcription']}"),
         "text_ctc": lambda d: tokenize(d['transcription']),
         "text_prev": lambda d: tokenize("<na>"),
     }
@@ -354,7 +360,7 @@ def main(args):
     train_dataset = ez.dataset.ESPnetEZDataset(fleurs_hf['train'], data_info=data_info)
     valid_dataset = ez.dataset.ESPnetEZDataset(fleurs_hf['validation'], data_info=data_info)
 
-    with open(args.finetune_config, 'r') as f:
+    with open(margs.finetune_config, 'r') as f:
         adapter_config = yaml.safe_load(f)
 
     def build_model_fn(args):
@@ -367,7 +373,7 @@ def main(args):
         (enc_gates, enc_mods, 
          dec_gates_x, dec_gates_mem, 
          dec_std_mods, dec_mem_mods) = setup_moe_gating(
-            model, len(SOURCE_LANGS), ADAPTER_PATHS, adapter_config, enc_dim, dec_dim
+            model, len(SOURCE_LANGS) + 1, ADAPTER_PATHS, adapter_config, enc_dim, dec_dim, margs.target_lang
         )
 
         # 2. Register Parameters
@@ -415,7 +421,7 @@ def main(args):
         print(f"Trainable params: {trainable}")
         return model
 
-    finetune_config = ez.config.update_finetune_config('s2t', pretrain_config, args.finetune_config)
+    finetune_config = ez.config.update_finetune_config('s2t', pretrain_config, margs.finetune_config)
     
     trainer = ez.Trainer(
         task='s2t',
@@ -424,8 +430,8 @@ def main(args):
         valid_dataset=valid_dataset,
         build_model_fn=build_model_fn,
         data_info=data_info,
-        output_dir=args.exp_dir,
-        stats_dir=args.stats_dir,
+        output_dir=margs.exp_dir,
+        stats_dir=margs.stats_dir,
         ngpu=1
     )
 
