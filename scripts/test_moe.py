@@ -33,7 +33,6 @@ class TokenLevelGating(nn.Module):
             nn.Linear(hidden_dim // 4, num_experts)
         )
         self.layer_norm = nn.LayerNorm(hidden_dim)
-        self.temperature = 0.4
         self.mean_pooling = mean_pooling
 
         nn.init.kaiming_uniform_(self.gate[-1].weight)
@@ -64,7 +63,7 @@ class TokenLevelGating(nn.Module):
             noise = torch.randn_like(logits) * 0.1 
             logits = logits + noise
 
-        weights = F.softmax(logits / self.temperature, dim=-1)
+        weights = F.softmax(logits, dim=-1)
 
 
         if self.mean_pooling:

@@ -35,7 +35,6 @@ class TokenLevelGating(nn.Module):
             nn.Linear(hidden_dim // 4, num_experts)
         )
         self.layer_norm = nn.LayerNorm(hidden_dim)
-        self.temperature = 0.4
         self.mean_pooling = mean_pooling
 
         nn.init.kaiming_uniform_(self.gate[-1].weight)
@@ -66,7 +65,7 @@ class TokenLevelGating(nn.Module):
             noise = torch.randn_like(logits) * 0.1 
             logits = logits + noise
 
-        weights = F.softmax(logits / self.temperature, dim=-1)
+        weights = F.softmax(logits, dim=-1)
 
 
         if self.mean_pooling:
@@ -394,7 +393,7 @@ def main(margs):
         (enc_gates, enc_mods, 
          dec_gates_x, dec_gates_mem, 
          dec_std_mods, dec_mem_mods) = setup_moe_gating(
-            model, len(SOURCE_LANGS) + 1, ADAPTER_PATHS, adapter_config, enc_dim, dec_dim, margs.target_lang
+            model, len(SOURCE_LANGS) + 1, ADAPTER_PATHS, adapter_config, enc_dim, dec_dim,
         )
 
         # 2. Register Parameters
