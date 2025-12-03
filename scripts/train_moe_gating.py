@@ -21,9 +21,10 @@ import yaml
 from espnet2.bin.s2t_inference import Speech2Text
 
 print("ESPnet version:", espnet.__version__)
+
 class TokenLevelGating(nn.Module):
     """Dense Gating - Uses weighted average of ALL experts."""
-    def __init__(self, hidden_dim: int, num_experts: int, dropout: float = 0.1, training_noise: bool = True, target_lang: str = None):
+    def __init__(self, hidden_dim: int, num_experts: int, dropout: float = 0.1, training_noise: bool = True, target_lang: str = None, mean_pooling=False):
         super().__init__()
         self.num_experts = num_experts
         self.training_noise = training_noise
@@ -33,24 +34,43 @@ class TokenLevelGating(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim // 4, num_experts)
         )
-        # Init zeros to start with a uniform average of all experts
-        nn.init.zeros_(self.gate[-1].weight)
-        nn.init.zeros_(self.gate[-1].bias)
+        self.layer_norm = nn.LayerNorm(hidden_dim)
+        self.temperature = 0.4
+        self.mean_pooling = mean_pooling
 
+        nn.init.kaiming_uniform_(self.gate[-1].weight)
+        with torch.no_grad():
+            self.gate[-1].weight.mul_(0.01)
+
+        nn.init.zeros_(self.gate[-1].bias)
         if target_lang:
             prior_tensor = torch.tensor(expert_priors(target_lang), dtype=self.gate[-1].bias.dtype)
             self.gate[-1].bias.data.copy_(prior_tensor)
 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+        if self.mean_pooling:
+            x = x.mean(dim=1)
+
+        x = self.layer_norm(x)
         logits = self.gate(x)
+
+        # Randomly eliminate base expert
+        if self.training:
+             if torch.rand(1).item() < 0.15:
+                 logits[..., -1] = -1e9
 
         if self.training and self.training_noise:
             # Noise helps prevent the router from collapsing to just one expert early on
             noise = torch.randn_like(logits) * 0.1 
             logits = logits + noise
 
-        weights = F.softmax(logits, dim=-1)
+        weights = F.softmax(logits / self.temperature, dim=-1)
+
+
+        if self.mean_pooling:
+            weights = weights.unsqueeze(1)
         
         return weights
 
@@ -58,15 +78,15 @@ def expert_priors(target_lang: str):
     # cym , rus, ita, por, hun, base
     priors = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     if target_lang == 'srp':
-        priors = [-2.0,  3.0,  -2.0, -2.0, -2.0, 1.0]
+        priors = [-1.0,  2.0,  -1.0, -1.0, -1.0, 1.0]
     if target_lang == 'hye':
-        priors = [-1.0,  3.0, -1.0, -1.0, -1.0, 1.0]
+        priors = [-1.0,  -1.0, -1.0, -1.0, -1.0, 1.0]
     if target_lang == 'gle':
-        priors = [ 3.0, -2.0, -2.0, -2.0, -2.0, 1.0]
+        priors = [ 2.0, -1.0, -1.0, -1.0, -1.0, 1.0]
     if target_lang == 'nob':
-        priors = [-2.0,  -2.0,  -2.0, -2.0, -2.0, 1.0]
+        priors = [-1.0,  -1.0,  -1.0, -1.0, -1.0, 1.0]
     if target_lang == 'oci':
-        priors = [-2.0, -2.0,  3.0,  -2.0, -2.0, 1.0]
+        priors = [-1.0, -1.0,  2.0,  2.0, -1.0, 1.0]
     return priors
 
 
@@ -81,20 +101,16 @@ class MultiExpertLoRALinear(nn.Module):
         in_features = base_linear.in_features
         out_features = base_linear.out_features
 
-        self.lora_A = nn.ParameterList([
-            nn.Parameter(torch.zeros(rank, in_features), requires_grad=False)
-            for _ in range(num_experts)
-        ])
-        self.lora_B = nn.ParameterList([
-            nn.Parameter(torch.zeros(out_features, rank), requires_grad=False)
-            for _ in range(num_experts)
-        ])
+        self.lora_A = nn.Parameter(torch.stack([
+            torch.zeros(rank, in_features) for _ in range(num_experts)
+        ]))
+        self.lora_B = nn.Parameter(torch.stack([
+            torch.zeros(out_features, rank) for _ in range(num_experts)
+        ]))
         
         # Freeze base, Freeze experts
         for param in self.base_linear.parameters():
             param.requires_grad = False
-        for p in self.lora_A: p.requires_grad = False
-        for p in self.lora_B: p.requires_grad = False
             
         self.current_gates = None
 
@@ -112,8 +128,10 @@ class MultiExpertLoRALinear(nn.Module):
         
         # Safety Check for Inference Crash
         if gates is not None:
-            if gates.shape[:-1] != x.shape[:-1]:
+            if gates.shape[0] != x.shape[0]:
                 gates = None 
+            elif gates.shape[1] != x.shape[1] and gates.shape[1] != 1:
+                gates = None
         
         if gates is None:
             # Fallback to Uniform Soft weights
@@ -122,17 +140,20 @@ class MultiExpertLoRALinear(nn.Module):
                 device=x.device, dtype=x.dtype
             ) / self.num_experts
 
-        # expert_outputs shape: [NumExperts, Batch, Seq, OutDim]
-        expert_outputs = []
-        for i in range(self.num_experts):
-            lora_out = x @ self.lora_A[i].T @ self.lora_B[i].T * self.scaling
-            expert_outputs.append(lora_out)
-        expert_outputs = torch.stack(expert_outputs, dim=0)
+        # x shape: Batch, Seq, In
+        # A shape: Experts, Rank, In
+        # B shape: Experts, Out, Rank
+        x_a = torch.einsum('bsi, eri -> bser', x, self.lora_A)
+        expert_outputs = torch.einsum('bser, eor -> bseo', x_a, self.lora_B)
 
-        # Gates: [Batch, Seq, NumExperts] -> [NumExperts, Batch, Seq, 1]
-        gates_expanded = gates.permute(-1, *range(len(gates.shape)-1)).unsqueeze(-1)
+        # Gates: [Batch, Seq, NumExperts] -> [Batch, Seq, NumExperts, 1]
+        gates_expanded = gates.unsqueeze(-1)
         
-        lora_delta = (gates_expanded * expert_outputs).sum(dim=0)
+        lora_delta = (gates_expanded * expert_outputs).sum(dim=2)
+
+        max_gate_weight = gates.max(dim=-1, keepdim=True).values
+        scaling_factor = 1.0 / (max_gate_weight + 1e-6)
+        lora_delta = lora_delta * scaling_factor
         
         return result + lora_delta
 
@@ -277,7 +298,7 @@ def setup_moe_gating(
 
     # Create Encoder Gating
     enc_gating_nets = nn.ModuleList([
-        TokenLevelGating(encoder_hidden_dim, num_experts, target_lang = target_lang) for _ in range(num_enc_layers)
+        TokenLevelGating(encoder_hidden_dim, num_experts, target_lang = target_lang, mean_pooling=False) for _ in range(num_enc_layers)
     ])
 
     print("Replacing Decoder Modules:")
@@ -302,10 +323,10 @@ def setup_moe_gating(
                 dec_std_modules[idx].append(mod)
 
     dec_gating_nets_x = nn.ModuleList([
-        TokenLevelGating(decoder_hidden_dim, num_experts, target_lang = target_lang) for _ in range(num_dec_layers)
+        TokenLevelGating(decoder_hidden_dim, num_experts, target_lang = target_lang, mean_pooling=False) for _ in range(num_dec_layers)
     ])
     dec_gating_nets_mem = nn.ModuleList([
-        TokenLevelGating(encoder_hidden_dim, num_experts, target_lang = target_lang) for _ in range(num_dec_layers)
+        TokenLevelGating(encoder_hidden_dim, num_experts, target_lang = target_lang, mean_pooling=False) for _ in range(num_dec_layers)
     ])
 
     return (
