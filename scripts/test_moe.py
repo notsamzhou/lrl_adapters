@@ -40,6 +40,11 @@ class TokenLevelGating(nn.Module):
             self.gate[-1].weight.mul_(0.01)
 
         nn.init.zeros_(self.gate[-1].bias)
+        # Debug: optional stats tracking in eval
+        self.track_stats = False
+        self.register_buffer("running_sum", torch.zeros(num_experts), persistent=False)
+        self.register_buffer("running_count", torch.tensor(0.0), persistent=False)
+
         if target_lang:
             prior_tensor = torch.tensor(expert_priors(target_lang), dtype=self.gate[-1].bias.dtype)
             self.gate[-1].bias.data.copy_(prior_tensor)
@@ -68,6 +73,13 @@ class TokenLevelGating(nn.Module):
 
         if self.mean_pooling:
             weights = weights.unsqueeze(1)
+        # Debug: aggregating gating weights
+        if self.track_stats:
+            with torch.no_grad():
+                # weights: [B, T, E] -> average over batch+time to [E]
+                avg_weights = weights.mean(dim=(0, 1))
+                self.running_sum += avg_weights.detach()
+                self.running_count += 1.0
         
         return weights
 
@@ -371,7 +383,6 @@ def load_finetuned_moe_model(checkpoint_path, test_owsm_lang, adapter_config_pat
     with open(adapter_config_path, 'r') as f:
         adapter_config = yaml.safe_load(f)
 
-
     print("Rebuilding MoE architecture:")
     (enc_gates, enc_mods, 
      dec_gates_x, dec_gates_mem, 
@@ -382,6 +393,14 @@ def load_finetuned_moe_model(checkpoint_path, test_owsm_lang, adapter_config_pat
         'dec_gates_x': dec_gates_x,
         'dec_gates_mem': dec_gates_mem,
     })
+
+    # Debug: enable tracking of weights for printing
+    for g in enc_gates:
+        g.track_stats = True
+    for g in dec_gates_x:
+        g.track_stats = True
+    for g in dec_gates_mem:
+        g.track_stats = True
 
     print("Registering Hooks:")
     for i, layer in enumerate(model.encoder.encoders):
@@ -408,6 +427,19 @@ def load_finetuned_moe_model(checkpoint_path, test_owsm_lang, adapter_config_pat
 
     # Strict=True ensures our architecture matches the checkpoint
     model.load_state_dict(state_dict, strict=True) 
+
+    # --- Debug: biases AFTER loading checkpoint ---
+    print("[DEBUG] Encoder gate[0] bias after loading checkpoint:")
+    for i, g in enumerate(enc_gates):
+        print(f"  Enc layer {i}: {g.gate[-1].bias.detach().cpu().numpy()}")
+
+    print("[DEBUG] Decoder gate_x[0] bias after loading checkpoint:")
+    for i, g in enumerate(dec_gates_x):
+        print(f"  Dec layer {i} (x): {g.gate[-1].bias.detach().cpu().numpy()}")
+
+    print("[DEBUG] Decoder gate_mem[0] bias after loading checkpoint:")
+    for i, g in enumerate(dec_gates_mem):
+        print(f"  Dec layer {i} (mem): {g.gate[-1].bias.detach().cpu().numpy()}")
     
     model.to(device)
     model.eval()
@@ -481,6 +513,57 @@ def main(args):
     print(f"\nFinal Results for {args.fleurs_lang}:")
     print(f"WER: {wer:.4f}")
     print(f"CER: {cer:.4f}")
+
+    # Debug: printed gate usage stats
+    model = model_pipeline.s2t_model
+    enc_gates = model.moe_components['enc_gates']
+    dec_gates_x = model.moe_components['dec_gates_x']
+    dec_gates_mem = model.moe_components['dec_gates_mem']
+
+    print("\n[DEBUG] Per-layer encoder gate weights:")
+    for i, g in enumerate(enc_gates):
+        if g.running_count.item() > 0:
+            avg = (g.running_sum / g.running_count).cpu().numpy()
+            print(f"  Enc layer {i}: {avg}")
+
+    print("\n[DEBUG] Per-layer decoder self-attn/FFN gate weights (x):")
+    for i, g in enumerate(dec_gates_x):
+        if g.running_count.item() > 0:
+            avg = (g.running_sum / g.running_count).cpu().numpy()
+            print(f"  Dec layer {i} (x): {avg}")
+
+    print("\n[DEBUG] Per-layer decoder cross-attn (memory) gate weights:")
+    for i, g in enumerate(dec_gates_mem):
+        if g.running_count.item() > 0:
+            avg = (g.running_sum / g.running_count).cpu().numpy()
+            print(f"  Dec layer {i} (mem): {avg}")
+
+    # group level averages: encoder vs decoder-x vs decoder-mem
+    def group_average(gates):
+        total_sum = None
+        total_count = 0.0
+        for g in gates:
+            if g.running_count.item() > 0:
+                if total_sum is None:
+                    total_sum = g.running_sum.clone()
+                else:
+                    total_sum += g.running_sum
+                total_count += g.running_count.item()
+        if total_sum is None or total_count == 0.0:
+            return None
+        return (total_sum / total_count).cpu().numpy()
+
+    enc_global = group_average(enc_gates)
+    dec_x_global = group_average(dec_gates_x)
+    dec_mem_global = group_average(dec_gates_mem)
+
+    print("\n[DEBUG] Group-level average gate weights:")
+    if enc_global is not None:
+        print("  Encoder (all layers):", enc_global)
+    if dec_x_global is not None:
+        print("  Decoder self-attn/FFN (all layers):", dec_x_global)
+    if dec_mem_global is not None:
+        print("  Decoder cross-attn memory (all layers):", dec_mem_global)
 
     if args.output_file:
         with open(args.output_file, 'w', encoding='utf-8') as f:
